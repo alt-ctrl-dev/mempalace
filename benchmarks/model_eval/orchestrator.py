@@ -148,8 +148,10 @@ def main():
     parser.add_argument("--llm-provider", default="ollama",
                         choices=["ollama", "openai-compat", "anthropic"],
                         help="LLM provider (default: ollama)")
-    parser.add_argument("--embed-endpoint", default="http://localhost:11434",
-                        help="Endpoint for the embedding model (always Ollama). Defaults to --endpoint when using ollama provider.")
+    parser.add_argument("--embed-endpoint", default=None,
+                        help="Endpoint for the embedding model (always Ollama). "
+                             "When omitted: defaults to --endpoint if --llm-provider=ollama, "
+                             "else http://localhost:11434.")
     parser.add_argument("--embed-model", default=_EMBED_MODEL,
                         help=f"Embedding model for semantic-similarity scoring. Default: {_EMBED_MODEL}.")
     parser.add_argument("--num-ctx", type=int, default=None,
@@ -171,6 +173,12 @@ def main():
         help="Continue running remaining (model, task) pairs after a failure (default). Use --no-continue-on-error to abort on first failure.",
     )
     args = parser.parse_args()
+
+    # Resolve --embed-endpoint default: it lives on Ollama always, but should
+    # follow --endpoint when the LLM provider is Ollama so a remote benchmark
+    # run scores against the same host.
+    if args.embed_endpoint is None:
+        args.embed_endpoint = args.endpoint if args.llm_provider == "ollama" else "http://localhost:11434"
 
     candidates = load_candidates(args.candidates_file, args.candidates)
     if not candidates:

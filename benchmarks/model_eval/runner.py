@@ -16,6 +16,7 @@ import argparse
 import dataclasses
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -61,6 +62,13 @@ class Result:
 
 
 _EMBED_MODEL = "embeddinggemma"
+
+# Language code validator. Accepts ISO-639-style codes with optional region
+# subtag (en, pt-BR, zh-CN, fr_CA, etc.). Strict pattern is required because
+# `language` is interpolated into the dataset filename — without validation a
+# caller could pass values containing path separators or `..` and the loader
+# would read files outside the task directory.
+_LANGUAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)?$")
 
 # Tasks that score via semantic similarity and require an embedding model.
 _EMBED_TASKS: set[tuple[str, str]] = {
@@ -247,9 +255,31 @@ def run(
     host = gather_host_info()
     run_date = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
 
+    if not _LANGUAGE_RE.match(language):
+        return Result(
+            model_tag=model_tag, task=task, mode=mode,
+            accuracy=0.0, extras={}, timing=aggregate_timings([]),
+            vram_resident_mb=None, vram_peak_mb=None, host=host,
+            run_date=run_date, n_samples=0, language=language,
+            error=f"Invalid language code: {language!r}. Expected pattern like 'en', 'pt-BR', 'zh-CN'.",
+        )
+
     task_dir = dataset_dir / task
     dataset_file = "dataset.jsonl" if language == "en" else f"dataset.{language}.jsonl"
     dataset_path = task_dir / dataset_file
+    # Belt-and-suspenders: even with the regex guard above, confirm the resolved
+    # path lives inside task_dir before opening anything on disk.
+    try:
+        if not dataset_path.resolve().is_relative_to(task_dir.resolve()):
+            raise ValueError("resolved path escapes task_dir")
+    except (ValueError, OSError) as e:
+        return Result(
+            model_tag=model_tag, task=task, mode=mode,
+            accuracy=0.0, extras={}, timing=aggregate_timings([]),
+            vram_resident_mb=None, vram_peak_mb=None, host=host,
+            run_date=run_date, n_samples=0, language=language,
+            error=f"Refused to load dataset outside task_dir: {dataset_path} ({e})",
+        )
     if not dataset_path.exists():
         return Result(
             model_tag=model_tag, task=task, mode=mode,
@@ -391,6 +421,10 @@ def main():
     parser.add_argument("--llm-provider", default="ollama",
                         choices=["ollama", "openai-compat", "anthropic"],
                         help="LLM provider (default: ollama)")
+    parser.add_argument("--embed-endpoint", default=None,
+                        help="Endpoint for the embedding model (always Ollama). "
+                             "When omitted: defaults to --endpoint if --llm-provider=ollama, "
+                             "else http://localhost:11434.")
     parser.add_argument("--language", default="en",
                         help="Dataset language suffix. 'en' loads dataset.jsonl; "
                              "other values load dataset.{lang}.jsonl (e.g. pt-BR, es, zh).")
@@ -407,6 +441,12 @@ def main():
     if args.task != "room_classification" and args.mode in ("closed", "open"):
         args.mode = "default"
 
+    # Resolve --embed-endpoint default: it lives on Ollama always, but should
+    # follow --endpoint when the LLM provider is Ollama so a remote benchmark
+    # run scores against the same host.
+    if args.embed_endpoint is None:
+        args.embed_endpoint = args.endpoint if args.llm_provider == "ollama" else "http://localhost:11434"
+
     result = run(
         model_tag=args.model,
         task=args.task,
@@ -417,6 +457,7 @@ def main():
         n_samples=args.n,
         strip_thinking=not args.no_strip_thinking,
         llm_provider=args.llm_provider,
+        embed_endpoint=args.embed_endpoint,
         language=args.language,
         embed_model=args.embed_model,
         num_ctx=args.num_ctx,
