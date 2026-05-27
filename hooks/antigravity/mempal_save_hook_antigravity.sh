@@ -191,8 +191,16 @@ mempal_log "stop" "$CONVERSATION_ID" "TRIGGERING SAVE wing=$WING transcript_dir=
 # sufficient; the parent (this hook script) can exit and the child
 # reparents to init. Stdout and stderr both go to the antigravity hook
 # log so a wedged mine surfaces in one place.
-if command -v mempalace >/dev/null 2>&1; then
-    nohup mempalace mine "$TRANSCRIPT_DIR" \
+#
+# We invoke mempalace as `"$MEMPAL_PYTHON_BIN" -m mempalace` rather than
+# the bare `mempalace` console script so a user with the package
+# installed only inside a venv (and the venv's bin/ not on the hook's
+# PATH, e.g. `uv tool install` in some distributions, or a manually
+# managed virtualenv) still hits a working mine. MEMPAL_PYTHON honours
+# user override; sees ``mempalace/__main__.py`` which dispatches to
+# ``mempalace.cli:main`` — identical to the console script.
+if "$MEMPAL_PYTHON_BIN" -m mempalace --version >/dev/null 2>&1; then
+    nohup "$MEMPAL_PYTHON_BIN" -m mempalace mine "$TRANSCRIPT_DIR" \
         --mode convos \
         --wing "$WING" \
         >> "$MEMPAL_AGY_LOG" 2>&1 < /dev/null &
@@ -201,14 +209,29 @@ if command -v mempalace >/dev/null 2>&1; then
     mempal_log "stop" "$CONVERSATION_ID" "mine spawned pid=$MINE_PID wing=$WING"
 
     # Schedule a marker-cleanup detach so the marker doesn't outlive a
-    # crashed mine. We can't `wait` because that would block the hook;
-    # instead, fire-and-forget a tiny watcher.
+    # crashed mine. We can't `wait` here because:
+    #   (1) bash `wait` only operates on direct children of the
+    #       calling shell; the subshell `( ... ) &` below runs as a
+    #       SIBLING of MINE_PID, not its parent, so `wait $MINE_PID`
+    #       fails IMMEDIATELY with "not a child of this shell" and
+    #       the marker would be deleted within milliseconds — even
+    #       while the mine is still running.
+    #   (2) We can't use `wait` directly in the parent either,
+    #       because that would block the hook for the full mine
+    #       runtime and Antigravity would hang waiting for stdout.
+    # The portable fix is `kill -0 $pid` polling: signal 0 doesn't
+    # actually deliver a signal, it just queries whether the pid is
+    # alive (regardless of parent-child relationship). The inner
+    # subshell is detached so the hook returns immediately, and the
+    # marker is removed only AFTER the mine actually exits.
     (
-        wait "$MINE_PID" 2>/dev/null
+        while kill -0 "$MINE_PID" 2>/dev/null; do
+            sleep 1
+        done
         rm -f "$PENDING_FILE" 2>/dev/null
     ) >/dev/null 2>&1 < /dev/null &
 else
-    mempal_log "stop" "$CONVERSATION_ID" "ERROR: mempalace CLI not on PATH; install or set MEMPAL_PYTHON"
+    mempal_log "stop" "$CONVERSATION_ID" "ERROR: mempalace is not runnable via $MEMPAL_PYTHON_BIN -m mempalace; install mempalace or set MEMPAL_PYTHON"
     rm -f "$PENDING_FILE" 2>/dev/null
 fi
 

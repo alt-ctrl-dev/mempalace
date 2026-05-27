@@ -121,9 +121,10 @@ mempal_absolutize() {
         /*) printf '%s' "$p" ;;
         ~*) printf '%s' "${p/#\~/$HOME}" ;;
         *)
-            # Resolve relative to the user's $PWD at invocation time, not
-            # the repo root.
-            (cd "$OLDPWD" 2>/dev/null || cd .) >/dev/null 2>&1
+            # Resolve relative to the user's $PWD at invocation time.
+            # We never `cd` in the main shell of this installer, so
+            # $PWD is already the user's invocation directory — no
+            # subshell cd dance needed.
             local base="${PWD}"
             printf '%s/%s' "$base" "$p"
             ;;

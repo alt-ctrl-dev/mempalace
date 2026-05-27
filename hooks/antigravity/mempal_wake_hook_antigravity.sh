@@ -115,9 +115,14 @@ import json, subprocess, sys
 wing = sys.argv[1]
 timeout_s = 0.5  # 500 ms
 
+# Invoke as ``[sys.executable, '-m', 'mempalace', ...]`` rather than
+# the bare ``mempalace`` console script. sys.executable is the same
+# Python that resolved MEMPAL_PYTHON in lib/common.sh, so this binds
+# the wake-up call to the correct interpreter (and its installed
+# mempalace package) even when the venv's bin/ isn't on PATH.
 try:
     completed = subprocess.run(
-        ['mempalace', 'wake-up', '--wing', wing],
+        [sys.executable, '-m', 'mempalace', 'wake-up', '--wing', wing],
         capture_output=True,
         text=True,
         timeout=timeout_s,

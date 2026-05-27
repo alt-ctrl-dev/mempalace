@@ -166,10 +166,15 @@ mempal_parse_stdin() {
         printf '%s' "$input" | "$MEMPAL_PYTHON_BIN" -c "
 import sys, json, re
 
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    data = {}
+# IMPORTANT: do NOT wrap json.load in a try/except. If the input is
+# not valid JSON we want Python to exit non-zero BEFORE printing the
+# __MEMPAL_PARSE_OK__ sentinel — the bash caller looks for the
+# sentinel on line 1 to decide whether to engage its defense-in-depth
+# 'failed to parse' branch. Catching the exception and falling back
+# to data={} would let the sentinel print, masking parse failures
+# from the bash side. The traceback lands in
+# antigravity_last_python_err.log so operators can debug.
+data = json.load(sys.stdin)
 
 def safe(s, allowed=r'[^a-zA-Z0-9_/.\-~]'):
     return re.sub(allowed, '', str(s))
@@ -285,6 +290,14 @@ mempal_save_interval() {
     case "$raw" in
         ''|*[!0-9]*) printf '15'; return 0 ;;
     esac
+    # Strip leading zeros. bash arithmetic ($((...))) parses any token
+    # starting with `0` as octal, so MEMPAL_SAVE_INTERVAL=08 would
+    # crash $((COUNT % INTERVAL)) with "value too great for base".
+    # Loop while the value still starts with 0 AND has length > 1, so
+    # the literal string "0" is preserved (then floored to 15 below).
+    while [ "${raw}" != "${raw#0}" ] && [ "${#raw}" -gt 1 ]; do
+        raw="${raw#0}"
+    done
     if [ "$raw" -lt 1 ] 2>/dev/null; then
         printf '15'
         return 0

@@ -321,6 +321,190 @@ def test_save_hook_floors_negative_save_interval(tmp_path: Path) -> None:
     assert result.stdout.strip() == "{}"
 
 
+@pytest.mark.parametrize("interval", ["08", "09", "008", "0099"])
+def test_save_hook_handles_leading_zero_save_interval(tmp_path: Path, interval: str) -> None:
+    """MEMPAL_SAVE_INTERVAL with leading zeros must NOT trigger bash octal arithmetic.
+
+    bash arithmetic ($((COUNT % INTERVAL))) parses any token starting
+    with `0` as octal. Values like "08" or "09" are not valid octal
+    digits and would crash the modulo step with::
+
+        bash: 08: value too great for base (error token is "08")
+
+    mempal_save_interval() in lib/common.sh strips leading zeros before
+    returning. Regression test for gemini-code-assist review on PR
+    #1633.
+    """
+    state = tmp_path / "state"
+    home = tmp_path / "home"
+    _ensure_palace(home)
+    result = _run_hook(
+        SAVE_HOOK,
+        _stop_payload(),
+        state_dir=state,
+        home=home,
+        extra_env={"MEMPAL_SAVE_INTERVAL": interval},
+    )
+    assert result.returncode == 0, (
+        f"save hook crashed on MEMPAL_SAVE_INTERVAL={interval!r}:\n"
+        f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+    assert result.stdout.strip() == "{}"
+    # Stderr must not contain the octal "value too great for base" error.
+    assert "value too great for base" not in result.stderr, (
+        f"bash octal parse error leaked through for MEMPAL_SAVE_INTERVAL={interval!r}: "
+        f"{result.stderr!r}"
+    )
+
+
+def test_common_sh_parser_omits_sentinel_on_malformed_json(tmp_path: Path) -> None:
+    """`mempal_parse_stdin` must NOT print the success sentinel on parse failure.
+
+    The bash callers detect parse failure by checking whether line 1
+    of the parser output is exactly ``__MEMPAL_PARSE_OK__``. If
+    json.load is wrapped in try/except (and falls back to data={}),
+    the sentinel still gets printed and the bash defense-in-depth
+    branch never engages. Regression test for gemini-code-assist
+    review on PR #1633.
+    """
+    state = tmp_path / "state"
+    home = tmp_path / "home"
+    _ensure_palace(home)
+    state.mkdir(parents=True, exist_ok=True)
+    # Source the lib and call mempal_parse_stdin with malformed JSON.
+    cmd = f". {COMMON_LIB}; mempal_parse_stdin '{{not even close to json{{'"
+    result = subprocess.run(
+        ["bash", "-c", cmd],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "MEMPAL_STATE_DIR": str(state),
+        },
+        timeout=10,
+    )
+    # The function itself shouldn't error (the inner Python crashes,
+    # but the subshell catches it). Stdout must NOT contain the sentinel.
+    assert "__MEMPAL_PARSE_OK__" not in result.stdout, (
+        f"parser printed success sentinel on bad JSON, defeating "
+        f"bash-side error detection: stdout={result.stdout!r}"
+    )
+
+
+def test_save_hook_missing_mempalace_python_module_does_not_crash(tmp_path: Path) -> None:
+    """When the resolved Python interpreter cannot run `-m mempalace`, fail open.
+
+    The save hook now invokes mempalace via ``"$MEMPAL_PYTHON_BIN"
+    -m mempalace mine ...`` rather than the bare ``mempalace`` console
+    script. If MEMPAL_PYTHON points at an interpreter that doesn't
+    have the package installed, the hook must log the failure and
+    still emit ``{}`` — never crash, never block the user.
+    """
+    state = tmp_path / "state"
+    home = tmp_path / "home"
+    _ensure_palace(home)
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    # Point MEMPAL_PYTHON at a stub interpreter that has no mempalace
+    # package installed — `python -m mempalace --version` will fail.
+    stub = tmp_path / "stub_python"
+    stub.write_text(
+        "#!/bin/sh\n"
+        "# Minimal python stub: rejects every -m invocation so the\n"
+        '# hook hits the "module unrunnable" branch.\n'
+        'case "$*" in\n'
+        '    *"-m mempalace"*) exit 1 ;;\n'
+        '    *) exec /usr/bin/env python3 "$@" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    result = _run_hook(
+        SAVE_HOOK,
+        _stop_payload(transcriptPath=str(transcript)),
+        state_dir=state,
+        home=home,
+        extra_env={
+            "MEMPAL_PYTHON": str(stub),
+            "MEMPAL_SAVE_INTERVAL": "1",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "{}"
+    log_body = (state / "antigravity_hook.log").read_text(errors="replace")
+    assert "is not runnable via" in log_body, (
+        f"expected the new 'mempalace not runnable via $MEMPAL_PYTHON_BIN' log "
+        f"line; got:\n{log_body}"
+    )
+
+
+def test_save_hook_uses_python_module_invocation(tmp_path: Path) -> None:
+    """The save hook source MUST invoke mempalace via `-m mempalace`.
+
+    Locks in the gemini-code-assist fix so a future edit doesn't
+    silently regress to the bare ``mempalace`` console-script call,
+    which fails when the user's PATH doesn't expose the venv bin.
+    """
+    body = SAVE_HOOK.read_text(encoding="utf-8")
+    assert '"$MEMPAL_PYTHON_BIN" -m mempalace' in body, (
+        "save hook should invoke mempalace via $MEMPAL_PYTHON_BIN -m mempalace, "
+        "not the bare `mempalace` console script. The bare invocation breaks "
+        "when the venv's bin/ isn't on the hook's PATH."
+    )
+    # Also verify the bare invocation is gone (defense-in-depth).
+    # Allow `mempalace` to appear in comments / strings, but not as
+    # the start of a `nohup ... mempalace mine` command.
+    assert "nohup mempalace " not in body, (
+        "bare `nohup mempalace ...` invocation found; should be "
+        '`nohup "$MEMPAL_PYTHON_BIN" -m mempalace ...`'
+    )
+
+
+def test_save_hook_marker_watcher_uses_kill_polling(tmp_path: Path) -> None:
+    """The marker-cleanup watcher must use `kill -0` polling, not `wait`.
+
+    bash `wait` only operates on direct children of the calling
+    shell. The watcher subshell `( ... ) &` runs as a SIBLING of the
+    mine pid, not its parent, so `wait $MINE_PID` fails immediately
+    with "not a child of this shell" and the marker would be deleted
+    within milliseconds — even while the mine is still running. The
+    correct primitive is `kill -0 $pid` which queries existence
+    regardless of parent-child relationship. Regression test for
+    gemini-code-assist review on PR #1633.
+    """
+    body = SAVE_HOOK.read_text(encoding="utf-8")
+    assert 'kill -0 "$MINE_PID"' in body, (
+        "marker-cleanup watcher must poll with `kill -0 $MINE_PID`, not `wait`. "
+        "`wait` only operates on direct children; the sibling subshell would "
+        "error out and delete the marker prematurely."
+    )
+    # Defense-in-depth: ensure the buggy `wait "$MINE_PID"` is gone.
+    assert 'wait "$MINE_PID"' not in body, (
+        'buggy `wait "$MINE_PID"` still present in the watcher subshell. '
+        "POSIX wait cannot watch a sibling pid."
+    )
+
+
+def test_wake_hook_uses_sys_executable_module_invocation(tmp_path: Path) -> None:
+    """The wake hook's inner Python must invoke mempalace via sys.executable -m.
+
+    Same rationale as the save hook fix: the bare ``mempalace``
+    console script fails when the venv's bin/ isn't on the hook's
+    PATH. Using ``[sys.executable, '-m', 'mempalace', ...]`` binds
+    the call to the same interpreter that resolved MEMPAL_PYTHON.
+    """
+    body = WAKE_HOOK.read_text(encoding="utf-8")
+    assert "sys.executable, '-m', 'mempalace'" in body, (
+        "wake hook should invoke mempalace via [sys.executable, '-m', 'mempalace', ...], "
+        "not ['mempalace', ...]. The bare invocation breaks when the venv's bin/ "
+        "isn't on the hook's PATH."
+    )
+    assert "['mempalace', 'wake-up'" not in body, (
+        "bare ['mempalace', 'wake-up', ...] invocation found in wake hook"
+    )
+
+
 def test_save_hook_rejects_traversal_in_transcript_path(tmp_path: Path) -> None:
     """A `..` segment in transcriptPath must be rejected."""
     state = tmp_path / "state"
