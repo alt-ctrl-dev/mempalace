@@ -61,14 +61,14 @@ Done once per project; both steps require PyPI owner / GitHub admin rights.
 
 ### Cutting a release
 
-1. Land everything for the release on `develop`, then merge `develop → main`.
+1. Bump the version in **all five** sources on `develop` so `version-guard.yml`
+   stays green (it is the single source of truth at `mempalace/version.py`,
+   mirrored in `pyproject.toml`, `.claude-plugin/marketplace.json`,
+   `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json`).
+2. Land everything for the release on `develop`, then merge `develop → main`.
    Releases publish **only from `main`** — the workflow refuses any tag whose
-   commit is not an ancestor of `main`.
-2. Bump the version in **all five** sources so `version-guard.yml` stays green
-   (it is the single source of truth at `mempalace/version.py`, mirrored in
-   `pyproject.toml`, `.claude-plugin/marketplace.json`,
-   `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json`). Commit to
-   `main`.
+   commit is not an ancestor of `main`. Don't commit the bump directly to
+   `main`: it bypasses branch protection and leaves `develop` behind.
 3. Run the **entry-point alignment check** above.
 4. On GitHub, **Releases → Draft a new release**:
    - **Target:** `main`
