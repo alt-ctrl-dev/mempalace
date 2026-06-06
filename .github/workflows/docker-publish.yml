@@ -2,6 +2,9 @@ name: Docker
 
 on:
   push:
+    # `main` is the release branch: pushes here publish the released image and
+    # update `latest`; `v*` tags publish versioned images. develop does not
+    # publish — it is validated via the pull_request trigger below.
     branches: [main]
     tags: ["v*"]
   pull_request:
@@ -20,6 +23,10 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v6
+
+      # Needed for the emulated linux/arm64 build on real pushes.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -40,22 +47,49 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # latest -> default branch; semver tags -> released versions.
+          # latest -> main (the latest release); semver tags -> released versions.
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          # Publish multi-arch (amd64 + arm64 for Apple Silicon / ARM hosts) on
+          # real pushes; keep PRs amd64-only so the emulated arm64 build does not
+          # slow the PR check.
+          platforms: ${{ github.event_name != 'pull_request' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Fork PRs get a read-only Actions cache, so writing it just emits 403
+          # noise — only export cache on in-repo events.
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
+
+  # Build-only validation for the CUDA image so it cannot silently rot (CUDA base
+  # tag drift, cross-stage interpreter/venv copy paths, the `gpu` extra). The
+  # runner has no GPU, so this only proves the image *compiles*; it is never
+  # published (users build it themselves, per the README).
+  build-gpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build GPU image (validation only — not published)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.gpu
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=gpu
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=gpu' || '' }}

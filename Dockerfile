@@ -73,9 +73,11 @@ LABEL org.opencontainers.image.title="MemPalace" \
       org.opencontainers.image.licenses="MIT"
 
 # /data is the single persistence root: HOME points here, so the palace
-# (~/.mempalace/palace), config (~/.mempalace), and the HuggingFace model
-# cache (~/.cache/huggingface, ~300 MB, lazy-downloaded on first use) all
-# land under one mountable volume.
+# (~/.mempalace/palace), config (~/.mempalace), and the embedding-model cache
+# all land under one mountable volume. The default `minilm` model caches under
+# ~/.cache/chroma (~80 MB, from ChromaDB's S3); the optional `embeddinggemma`
+# model caches under ~/.cache/huggingface (~300 MB). Both lazy-download on
+# first use.
 ENV HOME=/data \
     PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \

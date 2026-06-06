@@ -22,9 +22,11 @@ services:
     volumes:
       - mempalace-data:/data
     environment:
-      # Override the palace location, embedding model, etc. here if needed.
-      # - MEMPALACE_EMBEDDING_MODEL=minilm
-      MEMPALACE_PALACE_PATH: /data/.mempalace/palace
+      # Everything defaults correctly from HOME=/data (palace ->
+      # /data/.mempalace/palace, config -> /data/.mempalace, model cache ->
+      # /data/.cache). Override here only for non-default locations, e.g.:
+      # - MEMPALACE_EMBEDDING_MODEL=embeddinggemma   # multilingual (default: minilm)
+      # - MEMPALACE_PALACE_PATH=/data/custom/palace
 
 volumes:
   mempalace-data:
