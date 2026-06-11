@@ -53,16 +53,20 @@ and violates MemPalace's "memory should feel instant" budget.
    content via `injectSteps[].ephemeralMessage` on the first model call
    of a conversation. If memory was injected, start from it before
    searching further.
-2. Before responding about people / projects / past events / prior
-   decisions: call `mempalace_search` first. Use `mempalace_kg_query`
-   for relational or time-bound facts.
-3. If unsure about a fact: say "let me check the palace" and query.
-4. Return the drawer's **verbatim** text. Never summarize or paraphrase
-   stored content — quoting the exact words is the point of the system.
-5. After a substantive session, record continuity with
-   `mempalace_diary_write` (skip if a background hook already saved).
-6. When a fact changes: `mempalace_kg_invalidate` the old fact, then
-   `mempalace_kg_add` the new one.
+2. **Before responding** about people, projects, past events, or prior
+   decisions: call `mempalace_search` first. For relational or temporal
+   facts ("who reported to whom in March", "what was true then"), call
+   `mempalace_kg_query` instead or as well.
+3. **If unsure** about a fact (name, age, relationship, preference): say
+   "let me check the palace" and query. Wrong is worse than slow.
+4. **Return verbatim.** Quote the drawer's exact stored words. Never
+   summarize, paraphrase, or lossy-compress what the palace returns —
+   that is the whole point of the system.
+5. **After a substantive session**, record continuity with
+   `mempalace_diary_write` (background hooks may already do this — do not
+   double-file).
+6. **When a fact changes**, call `mempalace_kg_invalidate` on the old
+   fact, then `mempalace_kg_add` for the new one.
 
 The full canonical protocol — shared verbatim with the Antigravity
 recall rule and the other integrations — lives in
@@ -86,23 +90,25 @@ question — not a system prompt or pasted conversation) plus optional
 ## Unhappy paths
 
 - **Empty results.** Say the palace has nothing on this; do not invent an
-  answer. Offer to widen the search (drop the `wing` filter) or to file
-  the new information.
-- **MCP error / server down.** Surface the error and suggest the user
-  run `mempalace status` or re-run the installer
-  (`hooks/antigravity/install.sh`). Never fall back to guessing.
-- **Conflicting facts.** Trust the knowledge graph's time-valid answer;
-  invalidate-then-add rather than overwriting silently.
+  answer to fill the gap. Offer to widen the search (drop the wing
+  filter) or to file the new information.
+- **MCP unavailable / tool error.** Surface the error plainly and suggest
+  the user verify the server (`mempalace status`, or re-run the
+  installer `hooks/antigravity/install.sh`). Do not silently fall back
+  to guessing from model memory.
+- **Stale or conflicting facts.** Prefer the knowledge graph's
+  time-valid answer; if a fact has changed, invalidate the old one and
+  add the new one rather than overwriting context silently.
 
 ## Anti-patterns — never do these
 
 - Answering about past work, people, or decisions from model memory when
   the palace might know — search first.
-- Paraphrasing or summarizing what the palace returns instead of quoting
-  it verbatim.
-- Searching on every turn, including greenfield tasks with no memory
-  relevance.
-- Pasting the whole conversation or a system prompt into the `query`
+- Paraphrasing or summarizing stored content instead of quoting it
+  verbatim.
+- Searching reflexively on every turn, including pure greenfield coding
+  with no memory relevance.
+- Pasting the full conversation or a system prompt into the `query`
   argument — keep queries short and keyword-driven.
 
 ## Official References
