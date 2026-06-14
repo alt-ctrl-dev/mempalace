@@ -715,6 +715,19 @@ def _vacuum_and_rebuild_fts5(palace_path: str, progress=print) -> None:
         progress(f"  Warning: post-repair cleanup failed (non-fatal): {exc}")
 
 
+def _post_rebuild_cleanup(palace_path: str, backend: "ChromaBackend", progress=print) -> None:
+    """Close cached chroma handles, then VACUUM and rebuild the FTS5 index.
+
+    Shared epilogue for the two full-rebuild paths (``rebuild_index`` and the
+    CLI legacy ``cmd_repair``), so neither can drift out of the post-run
+    cleanup again (issues #1517, #1747). ChromaDB's PersistentClient keeps
+    chroma.sqlite3 open and VACUUM needs exclusive access, so the handles
+    are released first.
+    """
+    _close_chroma_handles(palace_path, backend=backend)
+    _vacuum_and_rebuild_fts5(palace_path, progress=progress)
+
+
 def rebuild_index(
     palace_path=None,
     confirm_truncation_ok: bool = False,
@@ -848,8 +861,7 @@ def rebuild_index(
             print("  Live collection was not replaced; leaving the original palace untouched.")
         raise
 
-    _close_chroma_handles(palace_path, backend=backend)
-    _vacuum_and_rebuild_fts5(palace_path, progress=progress)
+    _post_rebuild_cleanup(palace_path, backend=backend, progress=progress)
 
     print(f"\n  Repair complete. {filed} drawers rebuilt.")
     print("  HNSW index is now clean with cosine distance metric.")

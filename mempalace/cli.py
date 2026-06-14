@@ -889,7 +889,12 @@ def cmd_repair_status(args):
 
 
 def cmd_repair(args):
-    """Rebuild palace vector index from SQLite metadata."""
+    """Rebuild palace vector index from SQLite metadata.
+
+    On success the palace SQLite file is VACUUMed and the FTS5 index is
+    rebuilt, so the next repair's integrity preflight reads a consistent
+    database (#1747).
+    """
     config = MempalaceConfig()
     collection_name = config.collection_name
     palace_path = os.path.abspath(
@@ -906,6 +911,7 @@ def cmd_repair(args):
         TruncationDetected,
         _close_chroma_handles,
         _extract_drawers,
+        _post_rebuild_cleanup,
         _rebuild_collection_via_temp,
         check_extraction_safety,
         maybe_repair_poisoned_max_seq_id_before_rebuild,
@@ -1098,6 +1104,10 @@ def cmd_repair(args):
                 print(f"    2. Restore the backup directory to: {palace_path}")
                 print(f"       Backup location: {backup_path}")
         sys.exit(1)
+
+    # The bulk delete + re-upsert cycle above leaves the FTS5 inverted index
+    # inconsistent, which fails the next repair's integrity preflight (#1747).
+    _post_rebuild_cleanup(palace_path, backend=backend, progress=print)
 
     print(f"\n  Repair complete. {filed} drawers rebuilt.")
     print(f"  Backup saved at {backup_path}")
